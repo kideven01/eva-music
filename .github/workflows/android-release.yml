@@ -1,0 +1,88 @@
+name: Build Eva Music APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_url:
+        description: 源码 zip 下载地址（留空使用默认归档）
+        required: false
+        default: ''
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+
+permissions:
+  contents: write
+
+env:
+  DEFAULT_SOURCE_URL: https://aka.doubaocdn.com/s/7iSUzYHfuV
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Fetch source archive
+        run: |
+          URL="${{ github.event.inputs.source_url }}"
+          if [ -z "$URL" ]; then URL="$DEFAULT_SOURCE_URL"; fi
+          echo "SOURCE_URL=$URL" >> $GITHUB_ENV
+          curl -fL --retry 3 --retry-delay 5 -o "$RUNNER_TEMP/src.zip" "$URL"
+          unzip -q "$RUNNER_TEMP/src.zip" -d "$RUNNER_TEMP/src"
+          ls "$RUNNER_TEMP/src"
+
+      - name: Install JS dependencies
+        working-directory: ${{ runner.temp }}/src/MusicFree-master
+        run: npm install --legacy-peer-deps --no-audit --no-fund
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages
+        run: |
+          sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26.1.10909125"
+
+      - name: Build release APK
+        working-directory: ${{ runner.temp }}/src/MusicFree-master/android
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          chmod +x gradlew
+          ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon --stacktrace
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p out
+          find "$RUNNER_TEMP/src/MusicFree-master/android/app/build/outputs/apk" -name '*.apk' -exec cp {} out/ \;
+          cp "$RUNNER_TEMP/src.zip" out/Eva-music-source.zip
+          ls -lh out
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: eva-music-apk
+          path: out/*.apk
+          retention-days: 30
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: eva-build-${{ github.run_number }}
+          name: Eva 音乐 ${{ github.run_number }}
+          body: |
+            自动构建的 Eva 音乐安装包（arm64-v8a + universal）。
+            源码归档随包附上，遵循 AGPL-3.0。
+          files: out/*.apk
+          draft: false
+          prerelease: false
